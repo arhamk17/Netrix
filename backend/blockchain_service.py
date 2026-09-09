@@ -9,12 +9,16 @@ chain-of-custody events for digital forensic evidence.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from typing import Any
 
 from web3 import Web3
 
 from config import settings
+
+logger = logging.getLogger(__name__)
+
 
 # ABI for EvidenceIntegrity contract
 EVIDENCE_INTEGRITY_ABI = [
@@ -326,7 +330,8 @@ class BlockchainService:
                 }
                 for item in history_tuples
             ]
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to retrieve custody history for evidence %s: %s", evidence_id, exc)
             return []
 
     def verify_evidence(self, evidence_id: Any, current_hash: Any) -> bool:
@@ -338,7 +343,8 @@ class BlockchainService:
 
         try:
             return bool(self.contract.functions.verifyEvidence(ev_id_b32, curr_hash_b32).call())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to verify evidence %s on blockchain: %s", evidence_id, exc)
             return False
 
     def get_evidence_record(self, evidence_id: Any) -> dict[str, Any] | None:
@@ -355,8 +361,10 @@ class BlockchainService:
                 "timestamp": record[3],
                 "registered_by": record[4],
             }
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to retrieve evidence record for %s from blockchain: %s", evidence_id, exc)
             return None
+
 
 
 # Default singleton instance

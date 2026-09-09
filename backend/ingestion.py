@@ -1,19 +1,20 @@
 import hashlib
 import logging
 import os
+import re
 import uuid
 from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
 import pdfplumber
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form, File, Request, status
 from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
 from models import Evidence, Case, Entity, User
-from auth import get_current_user, require_roles, log_action
+from auth import get_current_user, require_roles, log_action, assert_case_access, get_client_ip
 import schemas
 import nlp_pipeline
 import graph_service
@@ -24,9 +25,44 @@ logger = logging.getLogger(__name__)
 
 ingestion_router = APIRouter()
 
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+CHUNK_SIZE = 1024 * 1024  # 1 MB chunk for streaming read
+
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".txt", ".csv", ".json", ".log", ".docx", ".xlsx",
+    ".png", ".jpg", ".jpeg", ".pcap", ".raw", ".dat", ".zip",
+}
+
+ALLOWED_MIME_PREFIXES = (
+    "text/", "image/", "application/pdf", "application/json", "application/octet-stream",
+    "application/vnd.", "application/zip", "application/x-zip-compressed",
+)
+
 
 def compute_sha256(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
+
+
+def _sanitize_filename(raw_filename: str) -> str:
+    """Sanitize original filename to prevent path traversal and shell injection attacks."""
+    if not raw_filename:
+        return "evidence_file.bin"
+    base = os.path.basename(raw_filename).strip()
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", base)
+    while safe.startswith("."):
+        safe = safe[1:]
+    if not safe:
+        return "evidence_file.bin"
+    return safe
+
+
+def _to_uuid(val):
+    if isinstance(val, uuid.UUID):
+        return val
+    try:
+        return uuid.UUID(str(val))
+    except (ValueError, TypeError):
+        return None
 
 
 import preprocessing
@@ -65,6 +101,7 @@ def route_and_extract(source_type: str, filename: str, file_bytes: bytes, eviden
 
 @ingestion_router.post("/evidence/upload", response_model=schemas.EvidenceResponse)
 def upload_evidence(
+    request: Request,
     file: UploadFile = File(...),
     case_id: str = Form(...),
     source_type: str = Form(...),
@@ -73,16 +110,49 @@ def upload_evidence(
 ):
     c_uuid = _to_uuid(case_id)
     case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    assert_case_access(case, current_user)
 
-    file_bytes = file.file.read()
+    # Validate file extension and MIME type
+    orig_name = file.filename or "evidence.bin"
+    ext = os.path.splitext(orig_name)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        # Check if content type is permitted
+        if not file.content_type or not any(file.content_type.startswith(prefix) for prefix in ALLOWED_MIME_PREFIXES):
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=f"Unsupported file format: '{ext}'. Allowed extensions: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            )
+
+    # Memory-safe chunked read with size validation
+    file_chunks = []
+    total_bytes = 0
+    while True:
+        chunk = file.file.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File exceeds maximum upload limit of {MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+            )
+        file_chunks.append(chunk)
+
+    file_bytes = b"".join(file_chunks)
     sha256_hash = compute_sha256(file_bytes)
 
     evidence_id = uuid.uuid4()
-    case_dir = os.path.join(settings.DATA_DIR, str(case_id))
+    safe_filename = _sanitize_filename(file.filename)
+    case_dir = os.path.abspath(os.path.join(settings.DATA_DIR, str(case_id)))
     os.makedirs(case_dir, exist_ok=True)
-    storage_path = os.path.join(case_dir, f"{evidence_id}_{file.filename}")
+    storage_path = os.path.abspath(os.path.join(case_dir, f"{evidence_id}_{safe_filename}"))
+
+    # Assert storage_path is safely contained inside case_dir
+    if not storage_path.startswith(case_dir):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file storage path target",
+        )
 
     with open(storage_path, "wb") as f:
         f.write(file_bytes)
@@ -138,19 +208,11 @@ def upload_evidence(
     except Exception as exc:
         logger.exception("Failed to dispatch Celery task for evidence %s: %s", evidence.id, exc)
 
+    client_ip = get_client_ip(request)
     log_action(db, current_user.id, "upload_evidence", "evidence", evidence.id,
-               {"case_id": str(case_id), "source_type": source_type})
+               {"case_id": str(case_id), "source_type": source_type}, ip_address=client_ip)
 
     return evidence
-
-
-def _to_uuid(val):
-    if isinstance(val, uuid.UUID):
-        return val
-    try:
-        return uuid.UUID(str(val))
-    except (ValueError, TypeError):
-        return None
 
 
 @ingestion_router.get("/evidence/{evidence_id}/status", response_model=schemas.EvidenceStatusResponse)
@@ -163,6 +225,9 @@ def get_evidence_status(
     evidence = db.query(Evidence).filter(Evidence.id == ev_uuid).first() if ev_uuid else None
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
+
+    case = db.query(Case).filter(Case.id == evidence.case_id).first()
+    assert_case_access(case, current_user)
     return evidence
 
 
@@ -177,6 +242,9 @@ def verify_evidence(
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
 
+    case = db.query(Case).filter(Case.id == evidence.case_id).first()
+    assert_case_access(case, current_user)
+
     if not os.path.exists(evidence.storage_path):
         raise HTTPException(status_code=404, detail="Evidence file missing on disk")
 
@@ -188,7 +256,7 @@ def verify_evidence(
         match = computed_hash.lower() == stored_hash.lower()
         verified_at = datetime.utcnow()
 
-        # Blockchain verification check
+        # Blockchain verification check (strictly read-only)
         blockchain_verified = None
         bc_record = None
         custody_hist = []
@@ -196,12 +264,6 @@ def verify_evidence(
             bc_record = blockchain_service.get_evidence_record(str(evidence.id))
             if bc_record:
                 blockchain_verified = blockchain_service.verify_evidence(str(evidence.id), computed_hash)
-                # If verified successfully, record immutable VERIFIED custody event on blockchain
-                if blockchain_verified:
-                    try:
-                        blockchain_service.record_custody_event(str(evidence.id), "VERIFIED")
-                    except Exception as rec_exc:
-                        logger.warning("Failed to record VERIFIED custody event for evidence %s: %s", evidence_id, rec_exc)
             else:
                 blockchain_verified = False
 
@@ -221,6 +283,8 @@ def verify_evidence(
             "blockchain_record": bc_record,
             "custody_history": custody_hist,
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Failed to verify evidence %s: %s", evidence_id, exc)
         raise HTTPException(status_code=500, detail=f"Failed to verify evidence: {exc}")
@@ -236,6 +300,9 @@ def get_evidence_blockchain(
     evidence = db.query(Evidence).filter(Evidence.id == ev_uuid).first() if ev_uuid else None
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
+
+    case = db.query(Case).filter(Case.id == evidence.case_id).first()
+    assert_case_access(case, current_user)
 
     try:
         record = blockchain_service.get_evidence_record(str(evidence.id))
@@ -285,6 +352,9 @@ def get_evidence_custody_history(
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
 
+    case = db.query(Case).filter(Case.id == evidence.case_id).first()
+    assert_case_access(case, current_user)
+
     try:
         events = blockchain_service.get_custody_history(str(evidence.id))
     except Exception as exc:
@@ -304,6 +374,9 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db),
     evidence = db.query(Evidence).filter(Evidence.id == ev_uuid).first() if ev_uuid else None
     if not evidence:
         raise HTTPException(status_code=404, detail="Evidence not found")
+
+    case = db.query(Case).filter(Case.id == evidence.case_id).first()
+    assert_case_access(case, current_user)
     return evidence
 
 
@@ -311,6 +384,9 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db),
 def list_case_evidence(case_id: str, db: Session = Depends(get_db),
                         current_user: User = Depends(get_current_user)):
     c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
     return db.query(Evidence).filter(Evidence.case_id == c_uuid).all() if c_uuid else []
+
 
 

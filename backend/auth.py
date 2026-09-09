@@ -1,7 +1,11 @@
+import threading
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -9,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
-from models import User, AuditLog
+from models import User, AuditLog, Case
 import schemas
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -18,10 +22,27 @@ oauth2_scheme = security
 
 auth_router = APIRouter()
 
+# Rate limiting state for brute-force protection
+_login_attempts = defaultdict(list)
+_attempts_lock = threading.Lock()
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 300  # 5 minutes
+LOCKOUT_SECONDS = 300  # 5 minutes
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def get_client_ip(request: Optional[Request]) -> Optional[str]:
+    if not request:
+        return None
+    if "x-forwarded-for" in request.headers:
+        return request.headers["x-forwarded-for"].split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return None
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -82,14 +103,38 @@ def require_roles(*roles: str):
     return role_checker
 
 
-def log_action(db: Session, user_id, action: str, resource_type: str = None,
+def assert_case_access(case: Optional[Case], user: User) -> Case:
+    """Assert that the user has permission to view or manipulate the given case."""
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    if user.role in ("admin", "supervisor"):
+        return case
+    user_id_str = str(user.id) if user.id is not None else None
+    created_by_str = str(case.created_by) if case.created_by is not None else None
+    assigned_to_str = str(case.assigned_to) if case.assigned_to is not None else None
+    if user_id_str not in (created_by_str, assigned_to_str):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this case",
+        )
+    return case
 
-                resource_id: str = None, details: dict = None):
+
+def log_action(
+    db: Session,
+    user_id,
+    action: str,
+    resource_type: str = None,
+    resource_id: str = None,
+    details: dict = None,
+    ip_address: str = None,
+):
     entry = AuditLog(
         user_id=user_id,
         action=action,
         resource_type=resource_type,
         resource_id=str(resource_id) if resource_id else None,
+        ip_address=ip_address,
         details=details or {},
     )
     db.add(entry)
@@ -100,16 +145,38 @@ def log_action(db: Session, user_id, action: str, resource_type: str = None,
 # Routes
 # ---------------------------------------------------------------------------
 @auth_router.post("/login", response_model=schemas.TokenResponse)
-def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
+def login(payload: schemas.LoginRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = get_client_ip(request)
+    now = time.time()
+    
+    # Rate limit check per username
+    with _attempts_lock:
+        recent_attempts = [t for t in _login_attempts[payload.username] if now - t < LOGIN_WINDOW_SECONDS]
+        _login_attempts[payload.username] = recent_attempts
+        if len(recent_attempts) >= MAX_LOGIN_ATTEMPTS:
+            oldest_attempt = min(recent_attempts)
+            retry_after = max(1, int(LOCKOUT_SECONDS - (now - oldest_attempt)))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed login attempts. Account temporarily locked. Please try again in {retry_after} seconds.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
     user = db.query(User).filter(User.username == payload.username).first()
     if not user or not verify_password(payload.password, user.password_hash):
+        with _attempts_lock:
+            _login_attempts[payload.username].append(time.time())
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Reset failed attempts on success
+    with _attempts_lock:
+        _login_attempts.pop(payload.username, None)
 
     user.last_login = datetime.utcnow()
     db.commit()
 
     token = create_access_token({"sub": str(user.id), "role": user.role})
-    log_action(db, user.id, "login", "user", user.id)
+    log_action(db, user.id, "login", "user", user.id, ip_address=client_ip)
 
     return schemas.TokenResponse(
         access_token=token,
@@ -129,8 +196,12 @@ def me(current_user: User = Depends(get_current_user)):
 
 
 @auth_router.post("/register")
-def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db),
-             current_user: User = Depends(get_current_user)):
+def register(
+    payload: schemas.RegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
 
@@ -147,6 +218,8 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db),
     db.commit()
     db.refresh(user)
 
-    log_action(db, current_user.id, "register_user", "user", user.id)
+    client_ip = get_client_ip(request)
+    log_action(db, current_user.id, "register_user", "user", user.id, ip_address=client_ip)
 
     return {"id": str(user.id), "username": user.username, "role": user.role}
+

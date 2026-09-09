@@ -43,6 +43,7 @@ client = TestClient(app)
 
 
 def test_api_routes():
+    app.dependency_overrides[get_db] = override_get_db
     db = TestingSessionLocal()
     # Create test user
     inv_user = User(
@@ -67,7 +68,7 @@ def test_api_routes():
         case_number="CASE-API-001",
         title="API Test Case",
         created_by=inv_user.id,
-        assigned_to=inv_user.id,
+        assigned_to=analyst_user.id,
     )
     ent_id = uuid.uuid4()
     test_ent = Entity(

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from auth import get_current_user, require_roles
+from auth import get_current_user, require_roles, assert_case_access
 from database import get_db
 from models import AnalyticsResult, Case, Entity, LeadResult, Relationship, User
 import schemas
@@ -280,6 +280,10 @@ def generate_leads_endpoint(
     current_user: User = Depends(require_roles("investigator", "supervisor", "admin", "analyst")),
 ):
     """Generate investigative leads for a case based on existing persisted analytics."""
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
+
     leads = generate_leads_for_case(case_id, db)
     return schemas.LeadGenerateResponse(
         case_id=case_id,
@@ -300,8 +304,7 @@ def get_case_leads(
         raise HTTPException(status_code=400, detail="Invalid case_id UUID format")
 
     case = db.query(Case).filter(Case.id == c_uuid).first()
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    assert_case_access(case, current_user)
 
     return db.query(LeadResult).filter(LeadResult.case_id == c_uuid).order_by(LeadResult.generated_at.desc()).all()
 
@@ -321,4 +324,8 @@ def get_lead_by_id(
     if not lead:
         raise HTTPException(status_code=404, detail="Investigative lead not found")
 
+    case = db.query(Case).filter(Case.id == lead.case_id).first()
+    assert_case_access(case, current_user)
+
     return lead
+

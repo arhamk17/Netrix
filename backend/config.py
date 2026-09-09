@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     BLOCKCHAIN_RPC_URL: str = "http://127.0.0.1:8545"
     BLOCKCHAIN_CONTRACT_ADDRESS: str = ""
     BLOCKCHAIN_PRIVATE_KEY: str = ""
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
 
 
 settings = Settings()
+

@@ -23,8 +23,8 @@ from sklearn.ensemble import IsolationForest
 from sqlalchemy.orm import Session
 
 from database import get_neo4j_session, get_db
-from models import IPSResult, Entity, AnalyticsResult, User
-from auth import get_current_user, require_roles
+from models import IPSResult, Entity, AnalyticsResult, User, Case
+from auth import get_current_user, require_roles, assert_case_access
 import schemas
 
 logger = logging.getLogger(__name__)
@@ -801,6 +801,9 @@ def route_link_predictions(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("investigator", "supervisor", "analyst", "admin")),
 ):
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
     return compute_link_predictions(case_id, db)
 
 
@@ -810,6 +813,9 @@ def route_anomalies(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("investigator", "supervisor", "analyst", "admin")),
 ):
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
     return compute_anomaly_scores(case_id, db)
 
 
@@ -819,6 +825,9 @@ def route_ips(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("investigator", "supervisor", "analyst", "admin")),
 ):
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
     return compute_ips(case_id, db)
 
 
@@ -828,6 +837,9 @@ def route_communities(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("investigator", "supervisor", "analyst", "admin")),
 ):
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
     return compute_communities(case_id, db)
 
 
@@ -837,6 +849,9 @@ def route_centrality(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("investigator", "supervisor", "analyst", "admin")),
 ):
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
     return compute_centrality(case_id, db)
 
 
@@ -846,3 +861,4 @@ def route_model_status(
 ):
     """Returns whether ML models are trained and their evaluation metrics."""
     return get_model_status()
+

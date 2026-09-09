@@ -1,10 +1,11 @@
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from config import settings
 from database import engine, Base, neo4j_driver, get_db
 import auth
 import ingestion
@@ -17,7 +18,7 @@ import model_metrics
 from models import (
     Case, Evidence, Entity, IPSResult, User, Relationship, AnalyticsResult, AuditLog, Event, LeadResult, ModelMetrics
 )
-from auth import get_current_user, require_roles, log_action
+from auth import get_current_user, require_roles, log_action, assert_case_access, get_client_ip
 import schemas
 
 
@@ -35,9 +36,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+cors_origins = [orig.strip() for orig in settings.ALLOWED_ORIGINS.split(",") if orig.strip()]
+if not cors_origins:
+    cors_origins = ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,7 +68,7 @@ app.include_router(model_metrics.model_metrics_router)
 # Cases
 # ---------------------------------------------------------------------------
 @app.post("/cases", response_model=schemas.CaseResponse, tags=["cases"])
-def create_case(payload: schemas.CaseCreate, db: Session = Depends(get_db),
+def create_case(payload: schemas.CaseCreate, request: Request, db: Session = Depends(get_db),
                  current_user: User = Depends(require_roles("investigator", "supervisor", "admin"))):
     if db.query(Case).filter(Case.case_number == payload.case_number).first():
         raise HTTPException(status_code=400, detail="Case number already exists")
@@ -81,7 +86,8 @@ def create_case(payload: schemas.CaseCreate, db: Session = Depends(get_db),
     db.commit()
     db.refresh(case)
 
-    log_action(db, current_user.id, "create_case", "case", case.id)
+    client_ip = get_client_ip(request)
+    log_action(db, current_user.id, "create_case", "case", case.id, ip_address=client_ip)
     return case
 
 
@@ -124,8 +130,7 @@ def get_case(case_id: str, db: Session = Depends(get_db),
              current_user: User = Depends(get_current_user)):
     c_uuid = _to_uuid(case_id)
     case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    assert_case_access(case, current_user)
 
     evidence = db.query(Evidence).filter(Evidence.case_id == c_uuid).all()
     entity_count = db.query(Entity).filter(Entity.case_id == c_uuid).count()
@@ -158,31 +163,25 @@ def get_case_entities(case_id: str, db: Session = Depends(get_db),
                       current_user: User = Depends(get_current_user)):
     c_uuid = _to_uuid(case_id)
     case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    assert_case_access(case, current_user)
     return db.query(Entity).filter(Entity.case_id == c_uuid).all()
 
 
 @app.get("/cases/{case_id}/relationships", response_model=list[schemas.RelationshipResponse], tags=["cases"])
 def get_case_relationships(case_id: str, db: Session = Depends(get_db),
-                           current_user: User = Depends(get_current_user)):
+                            current_user: User = Depends(get_current_user)):
     c_uuid = _to_uuid(case_id)
     case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
+    assert_case_access(case, current_user)
     return db.query(Relationship).filter(Relationship.case_id == c_uuid).all()
 
 
 @app.patch("/cases/{case_id}", response_model=schemas.CaseResponse, tags=["cases"])
-def update_case(case_id: str, payload: schemas.CaseUpdate, db: Session = Depends(get_db),
+def update_case(case_id: str, payload: schemas.CaseUpdate, request: Request, db: Session = Depends(get_db),
                  current_user: User = Depends(require_roles("investigator", "supervisor", "admin"))):
     c_uuid = _to_uuid(case_id)
     case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    if current_user.role not in ("admin", "supervisor") and case.assigned_to != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to update this case")
+    assert_case_access(case, current_user)
 
     for field in ("status", "priority", "title", "description"):
         value = getattr(payload, field)
@@ -191,6 +190,6 @@ def update_case(case_id: str, payload: schemas.CaseUpdate, db: Session = Depends
 
     db.commit()
     db.refresh(case)
-    log_action(db, current_user.id, "update_case", "case", case.id)
+    client_ip = get_client_ip(request)
+    log_action(db, current_user.id, "update_case", "case", case.id, ip_address=client_ip)
     return case
-

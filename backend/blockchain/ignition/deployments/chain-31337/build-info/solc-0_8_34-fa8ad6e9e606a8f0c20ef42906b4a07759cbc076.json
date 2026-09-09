@@ -1,0 +1,49 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_34-fa8ad6e9e606a8f0c20ef42906b4a07759cbc076",
+  "solcVersion": "0.8.34",
+  "solcLongVersion": "0.8.34+commit.80d5c536",
+  "compilerType": "solc",
+  "toolVersions": {
+    "hardhat": "3.16.0"
+  },
+  "userSourceNameMap": {
+    "contracts/EvidenceIntegrity.sol": "project/contracts/EvidenceIntegrity.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "osaka",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/EvidenceIntegrity.sol": {
+        "content": "// SPDX-License-Identifier: MIT\r\npragma solidity ^0.8.24;\r\n\r\n/// @title EvidenceIntegrity\r\n/// @notice Registers and verifies cryptographic hashes of digital forensic evidence.\r\n/// @dev This contract stores ONLY evidence metadata and hashes for integrity/provenance\r\n///      purposes. It never stores raw evidence files, PII, PDFs, images, or any other\r\n///      raw evidence content on-chain.\r\ncontract EvidenceIntegrity {\r\n    /// @notice On-chain record proving an evidence hash existed at a specific time.\r\n    struct EvidenceRecord {\r\n        bytes32 evidenceId;    // Unique identifier for the evidence item\r\n        bytes32 evidenceHash;  // Cryptographic hash (e.g. SHA-256) of the off-chain evidence\r\n        bytes32 caseId;        // Identifier of the case the evidence belongs to\r\n        uint256 timestamp;     // Block timestamp at registration\r\n        address registeredBy;  // Address that submitted the registration\r\n    }\r\n\r\n    /// @dev Maps an evidenceId to its registered evidence record.\r\n    mapping(bytes32 => EvidenceRecord) private evidenceRecords;\r\n\r\n    /// @dev Tracks whether an evidenceId has already been registered.\r\n    mapping(bytes32 => bool) private isRegistered;\r\n\r\n    /// @notice Emitted when a new evidence record is permanently registered.\r\n    event EvidenceRegistered(\r\n        bytes32 indexed evidenceId,\r\n        bytes32 evidenceHash,\r\n        bytes32 indexed caseId,\r\n        uint256 timestamp,\r\n        address indexed registeredBy\r\n    );\r\n\r\n    /// @notice Permanently registers the hash of an evidence item on-chain.\r\n    /// @dev Reverts if the evidenceId has already been registered, ensuring\r\n    ///      evidence records cannot be overwritten or duplicated.\r\n    /// @param evidenceId Unique identifier for the evidence item.\r\n    /// @param evidenceHash Cryptographic hash of the off-chain evidence content.\r\n    /// @param caseId Identifier of the case the evidence belongs to.\r\n    function registerEvidence(\r\n        bytes32 evidenceId,\r\n        bytes32 evidenceHash,\r\n        bytes32 caseId\r\n    ) external {\r\n        require(!isRegistered[evidenceId], \"EvidenceIntegrity: evidence already registered\");\r\n\r\n        evidenceRecords[evidenceId] = EvidenceRecord({\r\n            evidenceId: evidenceId,\r\n            evidenceHash: evidenceHash,\r\n            caseId: caseId,\r\n            timestamp: block.timestamp,\r\n            registeredBy: msg.sender\r\n        });\r\n        isRegistered[evidenceId] = true;\r\n\r\n        emit EvidenceRegistered(evidenceId, evidenceHash, caseId, block.timestamp, msg.sender);\r\n    }\r\n\r\n    /// @notice Verifies whether a supplied hash matches the hash stored on-chain.\r\n    /// @param evidenceId Unique identifier for the evidence item.\r\n    /// @param currentHash Hash computed from the current state of the off-chain evidence.\r\n    /// @return matches True if currentHash equals the originally registered hash.\r\n    function verifyEvidence(bytes32 evidenceId, bytes32 currentHash) external view returns (bool matches) {\r\n        require(isRegistered[evidenceId], \"EvidenceIntegrity: evidence not registered\");\r\n        return evidenceRecords[evidenceId].evidenceHash == currentHash;\r\n    }\r\n\r\n    /// @notice Retrieves the full evidence record for a given evidenceId.\r\n    /// @param evidenceId Unique identifier for the evidence item.\r\n    /// @return record The stored EvidenceRecord.\r\n    function getEvidenceRecord(bytes32 evidenceId) external view returns (EvidenceRecord memory record) {\r\n        require(isRegistered[evidenceId], \"EvidenceIntegrity: evidence not registered\");\r\n        return evidenceRecords[evidenceId];\r\n    }\r\n}\r\n"
+      }
+    }
+  }
+}

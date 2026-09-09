@@ -29,9 +29,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Criminal Intelligence API",
+    title="Netrix Intelligence API",
     version="1.0.0",
-    description="AI-Powered Temporal Criminal Intelligence System",
+    description="NETRIX — AI-Powered Digital Forensics, Temporal Graph Intelligence & Blockchain Integrity System",
     lifespan=lifespan,
 )
 
@@ -46,7 +46,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "criminal-intelligence-api"}
+    return {"status": "ok", "service": "netrix-intelligence-api"}
 
 
 app.include_router(auth.auth_router, prefix="/auth", tags=["auth"])

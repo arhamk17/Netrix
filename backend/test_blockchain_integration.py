@@ -1,5 +1,5 @@
 """
-Comprehensive Blockchain & Chain-of-Custody Integration Test Suite for ATCIES.
+Comprehensive Blockchain & Chain-of-Custody Integration Test Suite for NETRIX.
 
 Tests:
 A. Blockchain connection
@@ -70,7 +70,7 @@ client = TestClient(app)
 
 def run_blockchain_tests():
     print("\n=======================================================", flush=True)
-    print("STARTING ATCIES BLOCKCHAIN & CUSTODY TEST SUITE", flush=True)
+    print("STARTING NETRIX BLOCKCHAIN & CUSTODY TEST SUITE", flush=True)
     print("=======================================================\n", flush=True)
 
     # -------------------------------------------------------------------------
@@ -158,7 +158,7 @@ def run_blockchain_tests():
     inv_user = User(
         id=inv_id,
         username="investigator_custody",
-        email="inv_custody@atcies.local",
+        email="inv_custody@netrix.local",
         password_hash=hash_password("Password123!"),
         role="investigator",
         is_active=True,
@@ -166,7 +166,7 @@ def run_blockchain_tests():
     ana_user = User(
         id=ana_id,
         username="analyst_custody",
-        email="ana_custody@atcies.local",
+        email="ana_custody@netrix.local",
         password_hash=hash_password("Password123!"),
         role="analyst",
         is_active=True,
@@ -261,7 +261,7 @@ def run_blockchain_tests():
 
     db.close()
     print("=======================================================", flush=True)
-    print("ALL ATCIES BLOCKCHAIN & CUSTODY TESTS PASSED (100%)", flush=True)
+    print("ALL NETRIX BLOCKCHAIN & CUSTODY TESTS PASSED (100%)", flush=True)
     print("=======================================================\n", flush=True)
 
 

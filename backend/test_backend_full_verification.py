@@ -61,7 +61,7 @@ client = TestClient(app)
 
 def run_all_verification_tests():
     print("\n=======================================================")
-    print("STARTING FULL ATCIES BACKEND VERIFICATION TEST SUITE")
+    print("STARTING FULL NETRIX BACKEND VERIFICATION TEST SUITE")
     print("=======================================================\n")
 
     test_results = {}

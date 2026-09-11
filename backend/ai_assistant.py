@@ -8,20 +8,31 @@ Core predictions come from RandomForest + IsolationForest in analytics.py.
 /ai/ml-summary — structured ML-only summary, NO LLM call
 """
 import logging
+import os
+import uuid
 import httpx
 from google import genai
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_neo4j_session, get_db
-from models import IPSResult, User
-from auth import get_current_user, log_action
+from models import IPSResult, User, Case
+from auth import get_current_user, log_action, assert_case_access
 import schemas
 
 logger = logging.getLogger(__name__)
 
 ai_router = APIRouter()
+
+
+def _to_uuid(val):
+    if val is None or isinstance(val, uuid.UUID):
+        return val
+    try:
+        return uuid.UUID(str(val))
+    except (ValueError, TypeError):
+        return None
 
 SYSTEM_PROMPT = """You are an investigative intelligence assistant.
 Your job is to help investigators understand relationships in criminal case data.
@@ -33,28 +44,51 @@ Rules:
 - Use plain language. Be concise. Bullet points where helpful."""
 
 
-def build_graph_context(case_id: str) -> str:
-    with get_neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (n {case_id: $case_id})-[r]-(m)
-            RETURN n.name AS n_name, labels(n)[0] AS n_label, type(r) AS rel_type,
-                   m.name AS m_name, labels(m)[0] AS m_label,
-                   r.evidence_id AS evidence_id, r.timestamp AS timestamp,
-                   r.confidence AS confidence
-            LIMIT 120
-            """,
-            case_id=case_id,
-        )
-        lines = []
-        for rec in result:
-            lines.append(
-                f"[{rec['n_label']}] {rec['n_name']} --[{rec['rel_type']}]--> "
-                f"[{rec['m_label']}] {rec['m_name']} | evidence: {rec['evidence_id']} "
-                f"| time: {rec['timestamp']}"
-            )
-    context = "\n".join(lines)
-    return context[:6000]
+def build_graph_context(case_id: str, db: Session | None = None) -> str:
+    lines = []
+    from database import is_neo4j_online
+    if is_neo4j_online():
+        try:
+            with get_neo4j_session() as session:
+                result = session.run(
+                    """
+                    MATCH (n {case_id: $case_id})-[r]-(m)
+                    RETURN n.name AS n_name, labels(n)[0] AS n_label, type(r) AS rel_type,
+                           m.name AS m_name, labels(m)[0] AS m_label,
+                           r.evidence_id AS evidence_id, r.timestamp AS timestamp,
+                           r.confidence AS confidence
+                    LIMIT 120
+                    """,
+                    case_id=case_id,
+                )
+                for rec in result:
+                    lines.append(
+                        f"[{rec['n_label']}] {rec['n_name']} --[{rec['rel_type']}]--> "
+                        f"[{rec['m_label']}] {rec['m_name']} | evidence: {rec['evidence_id']} "
+                        f"| time: {rec['timestamp']}"
+                    )
+        except Exception as exc:
+            logger.warning("Neo4j build_graph_context failed, using DB fallback: %s", exc)
+
+    if not lines and db is not None:
+        try:
+            from models import Entity, Relationship
+            c_uuid = _to_uuid(case_id)
+            db_rels = db.query(Relationship).filter(Relationship.case_id == c_uuid).all()
+            db_entities = {e.id: e for e in db.query(Entity).filter(Entity.case_id == c_uuid).all()}
+            for rel in db_rels:
+                src = db_entities.get(rel.source_entity_id)
+                tgt = db_entities.get(rel.target_entity_id)
+                if src and tgt:
+                    lines.append(
+                        f"[{src.entity_type}] {src.canonical_name} --[{rel.relationship_type}]--> "
+                        f"[{tgt.entity_type}] {tgt.canonical_name} | evidence: {rel.evidence_id} "
+                        f"| time: {rel.timestamp}"
+                    )
+        except Exception as exc:
+            logger.warning("DB build_graph_context fallback failed: %s", exc)
+
+    return "\n".join(lines)[:6000]
 
 
 def _fallback_answer(query: str, context: str) -> dict:
@@ -81,7 +115,10 @@ def _fallback_answer(query: str, context: str) -> dict:
 
 
 def _get_gemini_client():
-    return genai.Client(api_key=settings.GEMINI_API_KEY)
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not gemini_key:
+        return None
+    return genai.Client(api_key=gemini_key)
 
 
 def call_inference_model(prompt: str, history: list = None) -> str:
@@ -90,10 +127,11 @@ def call_inference_model(prompt: str, history: list = None) -> str:
     Payload: {"prompt": prompt, "history": history or []}
     Expects response: {"text": ...}
     """
-    if not settings.LOCAL_MODEL_URL:
+    local_url = getattr(settings, "LOCAL_MODEL_URL", None)
+    if not local_url:
         raise ValueError("LOCAL_MODEL_URL is not configured")
 
-    url = f"{settings.LOCAL_MODEL_URL.rstrip('/')}/generate"
+    url = f"{local_url.rstrip('/')}/generate"
     payload = {
         "prompt": prompt,
         "history": history or [],
@@ -109,8 +147,9 @@ def call_inference_model(prompt: str, history: list = None) -> str:
         raise exc
 
 
-def ask_network(query: str, case_id: str, history: list) -> dict:
-    context = build_graph_context(case_id)
+def ask_network(query: str, case_id: str, conversation_history: list = None, db: Session | None = None) -> dict:
+    history = conversation_history or []
+    context = build_graph_context(case_id, db)
     full_prompt = (
         f"{SYSTEM_PROMPT}\n\n"
         f"Graph context:\n{context}\n\n"
@@ -118,7 +157,8 @@ def ask_network(query: str, case_id: str, history: list) -> dict:
     )
 
     # 1. Try LOCAL MODEL FIRST
-    if settings.LOCAL_MODEL_URL:
+    local_url = getattr(settings, "LOCAL_MODEL_URL", None)
+    if local_url:
         try:
             local_ans = call_inference_model(full_prompt, history)
             if local_ans:
@@ -131,7 +171,8 @@ def ask_network(query: str, case_id: str, history: list) -> dict:
             logger.warning("Local inference model failed, falling back: %s", exc)
 
     # 2. Fallback to Gemini if configured
-    if settings.GEMINI_API_KEY:
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if gemini_key:
         try:
             client = _get_gemini_client()
 
@@ -145,22 +186,25 @@ def ask_network(query: str, case_id: str, history: list) -> dict:
                 "parts": [{"text": f"Graph context:\n{context}\n\nQuestion: {query}"}],
             })
 
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=contents,
-                config={
-                    "system_instruction": SYSTEM_PROMPT,
-                    "max_output_tokens": 800,
-                },
-            )
-
-            return {
-                "answer": response.text,
-                "context_facts_used": context.count("\n"),
-                "confidence": "HIGH" if len(context) > 500 else "LOW",
-            }
+            for mod_name in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]:
+                try:
+                    response = client.models.generate_content(
+                        model=mod_name,
+                        contents=contents,
+                        config={
+                            "system_instruction": SYSTEM_PROMPT,
+                            "max_output_tokens": 800,
+                        },
+                    )
+                    return {
+                        "answer": response.text,
+                        "context_facts_used": context.count("\n"),
+                        "confidence": "HIGH" if len(context) > 500 else "LOW",
+                    }
+                except Exception as model_err:
+                    logger.warning("Gemini model %s failed: %s", mod_name, model_err)
         except Exception as exc:
-            logger.exception("Gemini API call failed: %s", exc)
+            logger.warning("Gemini generation failed, using rule-based fallback: %s", exc)
 
     # 3. Heuristic fallback
     return _fallback_answer(query, context)
@@ -176,7 +220,11 @@ def route_ask(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = ask_network(payload.query, payload.case_id, payload.conversation_history)
+    c_uuid = _to_uuid(payload.case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
+
+    result = ask_network(payload.query, payload.case_id, payload.conversation_history, db=db)
     log_action(db, current_user.id, "ai_ask", "case", payload.case_id,
                {"query": payload.query})
     return result
@@ -188,6 +236,10 @@ def route_explain(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    c_uuid = _to_uuid(payload.case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
+
     ips = (
         db.query(IPSResult)
         .filter(
@@ -255,6 +307,9 @@ def route_ml_summary(
     )
 
     case_id = payload.case_id
+    c_uuid = _to_uuid(case_id)
+    case = db.query(Case).filter(Case.id == c_uuid).first() if c_uuid else None
+    assert_case_access(case, current_user)
 
     top_ips = compute_ips(case_id, db)[:10]
     link_preds = compute_link_predictions(case_id)[:10]

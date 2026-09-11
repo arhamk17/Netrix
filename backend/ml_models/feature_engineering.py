@@ -18,9 +18,9 @@ if TYPE_CHECKING:
 # Node-level features (for Anomaly Detection)
 # ---------------------------------------------------------------------------
 
-def get_node_features(case_id: str) -> tuple[list[str], np.ndarray]:
+def get_node_features(case_id: str, db=None) -> tuple[list[str], np.ndarray]:
     """
-    Pull per-node feature vectors from Neo4j.
+    Pull per-node feature vectors in milliseconds using in-memory graph representation.
 
     Features (6):
         0  degree              - total edge count
@@ -29,157 +29,138 @@ def get_node_features(case_id: str) -> tuple[list[str], np.ndarray]:
         3  confidence          - extraction confidence
         4  neighbor_type_count - number of distinct neighbor node-label types
         5  triangle_count      - number of triangles (common-neighbor pairs)
-
-    Returns
-    -------
-    names : list[str]
-        Node canonical names in the same row order as X.
-    X : np.ndarray, shape (N, 6)
     """
-    from database import get_neo4j_session  # local import to avoid circular
+    from ml_models.gnn.gnn_service import GNNService
+    
+    try:
+        svc = GNNService.get_instance()
+        g = svc.extract_case_graph(case_id, db=db)
+    except Exception:
+        return [], np.empty((0, 6), dtype=np.float32)
 
-    with get_neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (n {case_id: $case_id})
-            OPTIONAL MATCH (n)-[r_out]->(nb_out {case_id: $case_id})
-            OPTIONAL MATCH (nb_in {case_id: $case_id})-[r_in]->(n)
-            WITH n,
-                 count(DISTINCT r_out) AS out_degree,
-                 count(DISTINCT r_in)  AS in_degree,
-                 collect(DISTINCT nb_out) + collect(DISTINCT nb_in) AS all_neighbors
-            WITH n, out_degree, in_degree, all_neighbors,
-                 [nb IN all_neighbors | labels(nb)[0]] AS nb_labels
-            RETURN
-                n.name          AS name,
-                n.confidence    AS confidence,
-                out_degree,
-                in_degree,
-                out_degree + in_degree                          AS degree,
-                size(apoc.coll.toSet(nb_labels))               AS neighbor_type_count
-            """,
-            case_id=case_id,
-        )
-        rows = [dict(r) for r in result]
+    # Flatten nodes
+    all_nodes: dict[str, dict] = {}
+    for ntype, nlist in g.get("nodes", {}).items():
+        for n in nlist:
+            name = n.get("name")
+            if name:
+                all_nodes[name] = {"type": ntype, "confidence": float(n.get("confidence", 0.85))}
 
-    if not rows:
-        return [], np.empty((0, 6))
+    if not all_nodes:
+        return [], np.empty((0, 6), dtype=np.float32)
 
-    # Compute triangle count (common neighbors between each node and its neighbors)
+    # Build adjacency
+    in_edges: dict[str, list[str]] = {n: [] for n in all_nodes}
+    out_edges: dict[str, list[str]] = {n: [] for n in all_nodes}
+    undirected_adj: dict[str, set[str]] = {n: set() for n in all_nodes}
+
+    for rel in g.get("relationships", []):
+        src, dst = rel.get("src"), rel.get("dst")
+        if src in all_nodes and dst in all_nodes:
+            out_edges[src].append(dst)
+            in_edges[dst].append(src)
+            undirected_adj[src].add(dst)
+            undirected_adj[dst].add(src)
+
     names, features = [], []
-    for row in rows:
-        tri = _compute_triangle_count(case_id, row["name"])
+    for name, ninfo in all_nodes.items():
+        nb_set = undirected_adj[name]
+        out_d = len(out_edges[name])
+        in_d = len(in_edges[name])
+        tot_d = out_d + in_d
+        conf = ninfo["confidence"]
+        
+        # distinct neighbor types
+        distinct_types = len({all_nodes[nb]["type"] for nb in nb_set if nb in all_nodes})
+        
+        # triangle count
+        tri = 0
+        nb_list = list(nb_set)
+        for i in range(len(nb_list)):
+            for j in range(i + 1, len(nb_list)):
+                if nb_list[j] in undirected_adj[nb_list[i]]:
+                    tri += 1
+
+        names.append(name)
         features.append([
-            float(row["degree"] or 0),
-            float(row["in_degree"] or 0),
-            float(row["out_degree"] or 0),
-            float(row["confidence"] or 0.5),
-            float(row["neighbor_type_count"] or 0),
+            float(tot_d),
+            float(in_d),
+            float(out_d),
+            float(conf),
+            float(distinct_types),
             float(tri),
         ])
-        names.append(row["name"])
 
     return names, np.array(features, dtype=np.float32)
 
 
-def _compute_triangle_count(case_id: str, node_name: str) -> int:
-    """Count triangles involving this node (cheap approximation via common-neighbor pairs)."""
-    from database import get_neo4j_session
-    with get_neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (n {name: $name, case_id: $case_id})-[]-(nb1 {case_id: $case_id})
-            MATCH (n)-[]-(nb2 {case_id: $case_id})
-            WHERE id(nb1) < id(nb2) AND (nb1)-[]-(nb2)
-            RETURN count(*) AS triangles
-            """,
-            name=node_name, case_id=case_id,
-        )
-        rec = result.single()
-        return int(rec["triangles"]) if rec else 0
-
-
-# ---------------------------------------------------------------------------
-# Edge-level features (for Link Prediction)
-# ---------------------------------------------------------------------------
-
-def get_candidate_pairs(case_id: str, max_pairs: int = 200) -> tuple[list[dict], np.ndarray]:
+def get_candidate_pairs(case_id: str, max_pairs: int = 200, db=None) -> tuple[list[dict], np.ndarray]:
     """
     Build candidate node-pairs that do NOT currently have a direct edge,
-    and extract link-prediction features for each.
-
-    Features (5):
-        0  common_neighbors   - count of shared neighbors
-        1  jaccard            - |N(u) ∩ N(v)| / |N(u) ∪ N(v)|
-        2  adamic_adar        - sum of 1/log(deg(w)) for common w
-        3  pref_attachment    - deg(u) * deg(v)
-        4  resource_alloc     - sum of 1/deg(w) for common w
-
-    Returns
-    -------
-    pairs : list[dict]  {"name_a", "name_b", "type_a", "type_b"}
-    X     : np.ndarray  shape (M, 5)
+    and extract link-prediction features in-memory.
     """
-    from database import get_neo4j_session
+    from ml_models.gnn.gnn_service import GNNService
+    
+    try:
+        svc = GNNService.get_instance()
+        g = svc.extract_case_graph(case_id, db=db)
+    except Exception:
+        return [], np.empty((0, 5), dtype=np.float32)
 
-    with get_neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (a {case_id: $case_id})-[]-(common)-[]-(b {case_id: $case_id})
-            WHERE id(a) < id(b) AND NOT (a)-[]-(b)
-            WITH a, b, collect(DISTINCT common) AS commons
-            WHERE size(commons) >= 1
-            RETURN
-                a.name AS name_a, labels(a)[0] AS type_a,
-                b.name AS name_b, labels(b)[0] AS type_b,
-                [c IN commons | c.name] AS common_names,
-                size(commons) AS cn_count
-            ORDER BY cn_count DESC
-            LIMIT $max_pairs
-            """,
-            case_id=case_id,
-            max_pairs=max_pairs,
-        )
-        raw_pairs = [dict(r) for r in result]
+    all_nodes: dict[str, dict] = {}
+    for ntype, nlist in g.get("nodes", {}).items():
+        for n in nlist:
+            name = n.get("name")
+            if name:
+                all_nodes[name] = {"type": ntype, "confidence": float(n.get("confidence", 0.85))}
 
-    if not raw_pairs:
-        return [], np.empty((0, 5))
+    undirected_adj: dict[str, set[str]] = {n: set() for n in all_nodes}
+    direct_edges: set[tuple[str, str]] = set()
 
-    # Build degree lookup
-    degrees = _get_degree_map(case_id)
+    for rel in g.get("relationships", []):
+        src, dst = rel.get("src"), rel.get("dst")
+        if src in all_nodes and dst in all_nodes:
+            undirected_adj[src].add(dst)
+            undirected_adj[dst].add(src)
+            direct_edges.add((min(src, dst), max(src, dst)))
+
+    degrees = {n: len(adj) for n, adj in undirected_adj.items()}
+    node_names = sorted(list(all_nodes.keys()))
+
+    candidate_list = []
+    for i in range(len(node_names)):
+        u = node_names[i]
+        adj_u = undirected_adj[u]
+        for j in range(i + 1, len(node_names)):
+            v = node_names[j]
+            if (u, v) in direct_edges:
+                continue
+            common = list(adj_u.intersection(undirected_adj[v]))
+            if common:
+                candidate_list.append((u, v, common))
+
+    candidate_list.sort(key=lambda item: len(item[2]), reverse=True)
+    candidate_list = candidate_list[:max_pairs]
 
     pairs, features = [], []
-    for row in raw_pairs:
-        cn = row["cn_count"]
-        commons = row["common_names"]
-        da = degrees.get(row["name_a"], 1)
-        db_ = degrees.get(row["name_b"], 1)
+    for u, v, commons in candidate_list:
+        cn = len(commons)
+        da = max(degrees.get(u, 1), 1)
+        db_ = max(degrees.get(v, 1), 1)
         union = da + db_ - cn
         jaccard = cn / union if union > 0 else 0.0
-        aa = sum(1.0 / math.log(degrees.get(w, 2) + 1) for w in commons)
-        ra = sum(1.0 / degrees.get(w, 1) for w in commons)
+        aa = sum(1.0 / math.log(max(degrees.get(w, 2), 2) + 1) for w in commons)
+        ra = sum(1.0 / max(degrees.get(w, 1), 1) for w in commons)
         pa = da * db_
+
         features.append([float(cn), jaccard, aa, float(pa), ra])
         pairs.append({
-            "name_a": row["name_a"], "type_a": row["type_a"],
-            "name_b": row["name_b"], "type_b": row["type_b"],
+            "name_a": u, "type_a": all_nodes[u]["type"],
+            "name_b": v, "type_b": all_nodes[v]["type"],
             "common_names": commons,
         })
 
     return pairs, np.array(features, dtype=np.float32)
-
-
-def _get_degree_map(case_id: str) -> dict[str, int]:
-    from database import get_neo4j_session
-    with get_neo4j_session() as session:
-        result = session.run(
-            """
-            MATCH (n {case_id: $case_id})
-            RETURN n.name AS name, size([(n)-[]-() | 1]) AS degree
-            """,
-            case_id=case_id,
-        )
-        return {r["name"]: int(r["degree"] or 1) for r in result}
 
 
 # ---------------------------------------------------------------------------

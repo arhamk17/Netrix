@@ -107,7 +107,7 @@ def assert_case_access(case: Optional[Case], user: User) -> Case:
     """Assert that the user has permission to view or manipulate the given case."""
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
-    if user.role in ("admin", "supervisor"):
+    if user.role in ("admin", "supervisor", "investigator", "analyst"):
         return case
     user_id_str = str(user.id) if user.id is not None else None
     created_by_str = str(case.created_by) if case.created_by is not None else None
@@ -168,6 +168,13 @@ def login(payload: schemas.LoginRequest, request: Request, db: Session = Depends
             _login_attempts[payload.username].append(time.time())
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # Check user active status
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is disabled",
+        )
+
     # Reset failed attempts on success
     with _attempts_lock:
         _login_attempts.pop(payload.username, None)
@@ -192,34 +199,55 @@ def me(current_user: User = Depends(get_current_user)):
         "username": current_user.username,
         "email": current_user.email,
         "role": current_user.role,
+        "is_active": current_user.is_active,
     }
 
 
-@auth_router.post("/register")
-def register(
-    payload: schemas.RegisterRequest,
+ALLOWED_USER_CREATION_ROLES = {"investigator", "supervisor"}
+
+
+@auth_router.post("/users", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
+def create_user(
+    payload: schemas.UserCreateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("admin")),
 ):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
+    """Admin-only user creation endpoint supporting INVESTIGATOR and SUPERVISOR roles."""
+    norm_role = payload.role.strip().lower()
+    if norm_role not in ALLOWED_USER_CREATION_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role '{payload.role}'. Allowed roles for creation: INVESTIGATOR, SUPERVISOR",
+        )
 
     if db.query(User).filter(User.username == payload.username).first():
-        raise HTTPException(status_code=400, detail="Username already exists")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
+
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists")
 
     user = User(
         username=payload.username,
         email=payload.email,
         password_hash=hash_password(payload.password),
-        role=payload.role,
+        role=norm_role,
+        is_active=True,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
     client_ip = get_client_ip(request)
-    log_action(db, current_user.id, "register_user", "user", user.id, ip_address=client_ip)
+    log_action(
+        db,
+        current_user.id,
+        "create_user",
+        "user",
+        user.id,
+        {"role": norm_role},
+        ip_address=client_ip,
+    )
 
-    return {"id": str(user.id), "username": user.username, "role": user.role}
+    return user
 

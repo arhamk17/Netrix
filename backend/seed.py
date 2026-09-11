@@ -5,10 +5,12 @@ FastAPI app to NOT be running on the same DB in a conflicting way
 (seeding talks to the DB directly, not through the HTTP API).
 """
 import io
+import os
 import uuid
 
 import pandas as pd
 
+from config import settings
 from database import SessionLocal, Base, engine
 from models import User, Case, Evidence, Entity
 from auth import hash_password
@@ -21,10 +23,24 @@ Base.metadata.create_all(bind=engine)
 db = SessionLocal()
 
 # ---------------------------------------------------------------------------
-# Users
+# Initial Admin & Demo Users
 # ---------------------------------------------------------------------------
+admin_username = os.environ.get("INITIAL_ADMIN_USERNAME") or settings.INITIAL_ADMIN_USERNAME or "arhamk_17"
+admin_email = os.environ.get("INITIAL_ADMIN_EMAIL") or settings.INITIAL_ADMIN_EMAIL or "hiarham17@gmail.com"
+admin_password = (
+    os.environ.get("INITIAL_ADMIN_PASSWORD")
+    or os.environ.get("ADMIN_PASSWORD")
+    or os.environ.get("NETRIX_ADMIN_PASSWORD")
+    or settings.INITIAL_ADMIN_PASSWORD
+)
+
+if not admin_password:
+    raise ValueError(
+        "Initial admin password is required. Please set the INITIAL_ADMIN_PASSWORD environment variable before running the seeder."
+    )
+
 DEMO_USERS = [
-    {"username": "admin", "password": "Admin@1234", "role": "admin", "email": "admin@demo.com"},
+    {"username": admin_username, "password": admin_password, "role": "admin", "email": admin_email},
     {"username": "investigator1", "password": "Inv@1234", "role": "investigator", "email": "inv1@demo.com"},
     {"username": "supervisor1", "password": "Sup@1234", "role": "supervisor", "email": "sup@demo.com"},
     {"username": "analyst1", "password": "Ana@1234", "role": "analyst", "email": "ana@demo.com"},
@@ -34,6 +50,13 @@ created_users = {}
 for u in DEMO_USERS:
     existing = db.query(User).filter(User.username == u["username"]).first()
     if existing:
+        existing.email = u["email"]
+        existing.role = u["role"]
+        if u.get("password"):
+            existing.password_hash = hash_password(u["password"])
+        existing.is_active = True
+        db.commit()
+        db.refresh(existing)
         created_users[u["username"]] = existing
         continue
     user = User(
@@ -41,13 +64,15 @@ for u in DEMO_USERS:
         email=u["email"],
         password_hash=hash_password(u["password"]),
         role=u["role"],
+        is_active=True,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     created_users[u["username"]] = user
 
-admin_user = created_users["admin"]
+admin_user = created_users[admin_username]
+
 
 # ---------------------------------------------------------------------------
 # Demo case
@@ -149,6 +174,9 @@ def _ingest(source_type: str, filename: str, extracted: dict):
     )
 
 
+from leads import generate_leads_for_case
+from model_metrics import seed_gnn_benchmark_metrics
+
 # FIR
 fir_extracted = nlp_pipeline.extract_from_text(FIR_TEXT, "ev_fir_0045")
 _ingest("fir", "fir_0045.txt", fir_extracted)
@@ -163,19 +191,39 @@ txn_df = pd.read_csv(io.StringIO(TRANSACTIONS_CSV))
 txn_extracted = nlp_pipeline.extract_from_transactions(txn_df, "ev_txn_jan2024")
 _ingest("transaction", "transactions_jan2024.csv", txn_extracted)
 
-# ---------------------------------------------------------------------------
-# Analytics pass
-# ---------------------------------------------------------------------------
-link_preds = compute_link_predictions(case_id)
-print(f"Link predictions computed: {len(link_preds)}")
+# Cyber / IP infrastructure
+ip_evidence_id = uuid.uuid4()
+ip_entities = [
+    {"label": "IP", "text": "192.168.1.105", "aliases": [], "confidence": 0.95, "evidence_ids": [str(ip_evidence_id)]},
+    {"label": "IP", "text": "10.0.0.42", "aliases": [], "confidence": 0.92, "evidence_ids": [str(ip_evidence_id)]},
+    {"label": "IP", "text": "172.16.0.88", "aliases": [], "confidence": 0.88, "evidence_ids": [str(ip_evidence_id)]},
+]
+ip_relations = [
+    {"source": "Rajan Mehta", "target": "192.168.1.105", "type": "USES_IP", "confidence": 0.90},
+    {"source": "Suresh Patil", "target": "10.0.0.42", "type": "USES_IP", "confidence": 0.85},
+    {"source": "Priya Shah", "target": "172.16.0.88", "type": "USES_IP", "confidence": 0.88},
+]
+_ingest("cyber", "network_logs_jan2024.csv", {"entities": ip_entities, "relations": ip_relations})
 
-anomalies = compute_anomaly_scores(case_id)
-print(f"Anomalies flagged: {len(anomalies)}")
+# ---------------------------------------------------------------------------
+# Analytics pass (GNN-Powered)
+# ---------------------------------------------------------------------------
+link_preds = compute_link_predictions(case_id, db)
+print(f"GNN Link predictions computed: {len(link_preds)}")
+
+anomalies = compute_anomaly_scores(case_id, db)
+print(f"Anomalies / Kingpins flagged: {len(anomalies)}")
 for a in anomalies:
-    print(f"  - {a['name']} ({a['entity_type']}): {a['anomaly_score']} [{a['flag']}]")
+    print(f"  - {a['name']} ({a['entity_type']}): {a['anomaly_score']} [{a['flag']}] via {a.get('model', 'Model')}")
 
 ips_results = compute_ips(case_id, db)
-print(f"IPS results computed: {len(ips_results)}")
+print(f"Multimodal IPS results computed: {len(ips_results)}")
+
+leads = generate_leads_for_case(case_id, db)
+print(f"Investigative leads generated: {len(leads)}")
+
+seed_gnn_benchmark_metrics(db)
+print("Seeded genuine GNN benchmark evaluation metrics.")
 
 db.close()
 

@@ -76,10 +76,12 @@ Visit `http://localhost:8000/docs` for interactive Swagger UI.
 ## 5. Seed demo data (optional)
 
 ```bash
+# Set initial admin password via environment variable
+export INITIAL_ADMIN_PASSWORD="YourSecureAdminPassword"
 python seed.py
 ```
 
-Creates 4 demo users, 1 case (`CR/2024/MUM/0045`), ingests a synthetic FIR +
+Creates the initial admin account (`arhamk_17`, `hiarham17@gmail.com`) and demo users, 1 case (`CR/2024/MUM/0045`), ingests a synthetic FIR +
 CDR + transactions dataset directly into Postgres/Neo4j, and runs the
 analytics pass (link predictions, anomalies, IPS).
 
@@ -90,7 +92,8 @@ analytics pass (link predictions, anomalies, IPS).
 # Login
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "Admin@1234"}'
+  -d '{"username": "arhamk_17", "password": "YourSecureAdminPassword"}'
+
 
 # (save the access_token from the response as $TOKEN)
 

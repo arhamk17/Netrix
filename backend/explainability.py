@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from auth import get_current_user
+from auth import get_current_user, assert_case_access
 from database import get_db
 from models import Case, Entity, Evidence, LeadResult, Relationship, User
 import schemas
@@ -210,4 +210,12 @@ def get_lead_explanation_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """Retrieve explainability chain and cryptographic evidence verification for a lead."""
+    l_uuid = _to_uuid(lead_id)
+    if not l_uuid:
+        raise HTTPException(status_code=400, detail="Invalid lead_id UUID format")
+    lead = db.query(LeadResult).filter(LeadResult.id == l_uuid).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Investigative lead not found")
+    case = db.query(Case).filter(Case.id == lead.case_id).first()
+    assert_case_access(case, current_user)
     return explain_lead(lead_id, db)

@@ -173,11 +173,14 @@ def test_fix_1_idor_case_authorization():
     resp = client.get(f"/analytics/ips?case_id={case1.id}", headers=headers_inv2)
     assert resp.status_code == 403
 
-    # 5. Attacker gets 403 on leads
+    # 5. Attacker gets 403 on leads and explainability
     resp = client.get(f"/leads?case_id={case1.id}", headers=headers_inv2)
     assert resp.status_code == 403
 
     resp = client.get(f"/leads/{lead1.id}", headers=headers_inv2)
+    assert resp.status_code == 403
+
+    resp = client.get(f"/leads/{lead1.id}/explain", headers=headers_inv2)
     assert resp.status_code == 403
 
     # 6. Admin has authorized access
@@ -461,3 +464,276 @@ def test_fix_9_audit_log_ip_tracking():
     assert audit_entry is not None
     assert audit_entry.ip_address == "203.0.113.195"
     db.close()
+
+
+def test_initial_admin_bootstrap_security():
+    """Initial admin account bootstrap securely reads password from environment without hardcoding."""
+    from auth import verify_password
+    from config import settings
+
+    db = TestingSessionLocal()
+
+    # 1. Verify default admin attributes
+    assert settings.INITIAL_ADMIN_USERNAME == "arhamk_17"
+    assert settings.INITIAL_ADMIN_EMAIL == "hiarham17@gmail.com"
+
+    # 2. Simulate seed user creation using env variable
+    admin_user = db.query(User).filter(User.username == "arhamk_17").first()
+    if not admin_user:
+        admin_user = User(
+            username="arhamk_17",
+            email="hiarham17@gmail.com",
+            password_hash=hash_password("SecuredAdminSecret99!"),
+            role="admin",
+            is_active=True,
+        )
+        db.add(admin_user)
+        db.commit()
+        db.refresh(admin_user)
+
+    assert admin_user.username == "arhamk_17"
+    assert admin_user.email == "hiarham17@gmail.com"
+    assert admin_user.role == "admin"
+    assert verify_password("SecuredAdminSecret99!", admin_user.password_hash) is True
+
+    # 3. Test login with the bootstrapped admin account
+    resp = client.post(
+        "/auth/login",
+        json={"username": "arhamk_17", "password": "SecuredAdminSecret99!"},
+    )
+    assert resp.status_code == 200
+    token_data = resp.json()
+    assert token_data["user"]["username"] == "arhamk_17"
+    assert token_data["user"]["role"] == "admin"
+
+    db.close()
+
+
+def test_public_registration_disabled():
+    """Public user registration is removed/disabled for unauthenticated users."""
+    resp = client.post(
+        "/auth/register",
+        json={
+            "username": "unauth_reg",
+            "email": "unauth_reg@test.com",
+            "password": "Password123!",
+            "role": "admin",
+        },
+    )
+    # Endpoint is removed/blocked (404 Not Found or 405/401/403)
+    assert resp.status_code in (404, 405, 401, 403)
+
+
+def test_admin_can_create_users_with_investigator_and_supervisor_roles():
+    """Admin can create users with INVESTIGATOR and SUPERVISOR roles via /auth/users."""
+    db = TestingSessionLocal()
+    admin = User(
+        id=uuid.uuid4(),
+        username="admin_creator",
+        email="admin_creator@test.com",
+        password_hash=hash_password("AdminPass123!"),
+        role="admin",
+        is_active=True,
+    )
+    db.add(admin)
+    db.commit()
+
+    token_admin = create_access_token({"sub": str(admin.id), "role": admin.role})
+    headers_admin = {"Authorization": f"Bearer {token_admin}"}
+
+    # 1. Create INVESTIGATOR
+    resp_inv = client.post(
+        "/auth/users",
+        json={
+            "username": "created_inv",
+            "email": "created_inv@test.com",
+            "password": "InvPassword123!",
+            "role": "INVESTIGATOR",
+        },
+        headers=headers_admin,
+    )
+    assert resp_inv.status_code == 201
+    data_inv = resp_inv.json()
+    assert data_inv["username"] == "created_inv"
+    assert data_inv["email"] == "created_inv@test.com"
+    assert data_inv["role"] == "investigator"
+    assert data_inv["is_active"] is True
+
+    # Verify created investigator can log in
+    resp_inv_login = client.post(
+        "/auth/login",
+        json={"username": "created_inv", "password": "InvPassword123!"},
+    )
+    assert resp_inv_login.status_code == 200
+    assert resp_inv_login.json()["user"]["role"] == "investigator"
+
+    # 2. Create SUPERVISOR
+    resp_sup = client.post(
+        "/auth/users",
+        json={
+            "username": "created_sup",
+            "email": "created_sup@test.com",
+            "password": "SupPassword123!",
+            "role": "SUPERVISOR",
+        },
+        headers=headers_admin,
+    )
+    assert resp_sup.status_code == 201
+    data_sup = resp_sup.json()
+    assert data_sup["username"] == "created_sup"
+    assert data_sup["email"] == "created_sup@test.com"
+    assert data_sup["role"] == "supervisor"
+    assert data_sup["is_active"] is True
+
+    # Verify created supervisor can log in
+    resp_sup_login = client.post(
+        "/auth/login",
+        json={"username": "created_sup", "password": "SupPassword123!"},
+    )
+    assert resp_sup_login.status_code == 200
+    assert resp_sup_login.json()["user"]["role"] == "supervisor"
+
+    db.close()
+
+
+def test_non_admin_cannot_create_users():
+    """Non-admin users (investigator, supervisor, unauthenticated) get 403 or 401 when calling /auth/users."""
+    db = TestingSessionLocal()
+    inv = User(
+        id=uuid.uuid4(),
+        username="regular_inv",
+        email="regular_inv@test.com",
+        password_hash=hash_password("Pass123!"),
+        role="investigator",
+        is_active=True,
+    )
+    sup = User(
+        id=uuid.uuid4(),
+        username="regular_sup",
+        email="regular_sup@test.com",
+        password_hash=hash_password("Pass123!"),
+        role="supervisor",
+        is_active=True,
+    )
+    admin = User(
+        id=uuid.uuid4(),
+        username="admin_for_invalid_role",
+        email="admin_role_check@test.com",
+        password_hash=hash_password("Pass123!"),
+        role="admin",
+        is_active=True,
+    )
+    db.add_all([inv, sup, admin])
+    db.commit()
+
+    token_inv = create_access_token({"sub": str(inv.id), "role": inv.role})
+    token_sup = create_access_token({"sub": str(sup.id), "role": sup.role})
+    token_admin = create_access_token({"sub": str(admin.id), "role": admin.role})
+
+    payload = {
+        "username": "new_user_fail",
+        "email": "fail@test.com",
+        "password": "Password123!",
+        "role": "investigator",
+    }
+
+    # 1. Unauthenticated gets 401
+    resp_unauth = client.post("/auth/users", json=payload)
+    assert resp_unauth.status_code == 401
+
+    # 2. Investigator gets 403
+    resp_inv = client.post("/auth/users", json=payload, headers={"Authorization": f"Bearer {token_inv}"})
+    assert resp_inv.status_code == 403
+
+    # 3. Supervisor gets 403
+    resp_sup = client.post("/auth/users", json=payload, headers={"Authorization": f"Bearer {token_sup}"})
+    assert resp_sup.status_code == 403
+
+    # 4. Admin attempting invalid role gets 400
+    invalid_role_payload = {
+        "username": "new_user_invalid_role",
+        "email": "invalid_role@test.com",
+        "password": "Password123!",
+        "role": "ANONYMOUS_HACKER",
+    }
+    resp_invalid = client.post("/auth/users", json=invalid_role_payload, headers={"Authorization": f"Bearer {token_admin}"})
+    assert resp_invalid.status_code == 400
+
+    # 5. Duplicate username gets 400
+    dup_payload = {
+        "username": "regular_inv",
+        "email": "diff_email@test.com",
+        "password": "Password123!",
+        "role": "investigator",
+    }
+    resp_dup = client.post("/auth/users", json=dup_payload, headers={"Authorization": f"Bearer {token_admin}"})
+    assert resp_dup.status_code == 400
+
+    db.close()
+
+
+def test_disabled_user_cannot_login():
+    """Users with is_active=False cannot login and receive 403 Forbidden."""
+    db = TestingSessionLocal()
+    disabled_user = User(
+        id=uuid.uuid4(),
+        username="disabled_account",
+        email="disabled@test.com",
+        password_hash=hash_password("ValidPassword123!"),
+        role="investigator",
+        is_active=False,
+    )
+    db.add(disabled_user)
+    db.commit()
+
+    resp = client.post(
+        "/auth/login",
+        json={"username": "disabled_account", "password": "ValidPassword123!"},
+    )
+    assert resp.status_code == 403
+    assert "disabled" in resp.json().get("detail", "").lower()
+
+    # Even if disabled user has a previously issued token, get_current_user rejects them with 401
+    disabled_token = create_access_token({"sub": str(disabled_user.id), "role": disabled_user.role})
+    resp_me = client.get("/auth/me", headers={"Authorization": f"Bearer {disabled_token}"})
+    assert resp_me.status_code == 401
+
+    db.close()
+
+
+def test_role_sourced_from_database_on_login():
+    """Role must come strictly from the database and user cannot forge role on login."""
+    from jose import jwt
+    from config import settings
+
+    db = TestingSessionLocal()
+    user = User(
+        id=uuid.uuid4(),
+        username="strict_inv",
+        email="strict_inv@test.com",
+        password_hash=hash_password("Password123!"),
+        role="investigator",
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+
+    # Attempt to pass role="admin" during login
+    resp = client.post(
+        "/auth/login",
+        json={"username": "strict_inv", "password": "Password123!", "role": "admin"},
+    )
+    assert resp.status_code == 200
+    token_resp = resp.json()
+
+    # Response user role must be investigator
+    assert token_resp["user"]["role"] == "investigator"
+
+    # Token payload must encode investigator
+    payload = jwt.decode(token_resp["access_token"], settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    assert payload["role"] == "investigator"
+    assert payload["role"] != "admin"
+
+    db.close()
+
+

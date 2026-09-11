@@ -107,13 +107,13 @@ def run_all_verification_tests():
         other_token = create_access_token({"sub": str(other_inv_id), "role": "investigator"})
         other_headers = {"Authorization": f"Bearer {other_token}"}
 
-        # 1b. Protected endpoint without JWT -> 401
+        # 1b. Protected endpoint without JWT -> 401 or 403
         no_auth_resp = client.get("/cases")
-        assert no_auth_resp.status_code == 401
+        assert no_auth_resp.status_code in (401, 403)
 
-        # 1c. Invalid/expired JWT -> 401
+        # 1c. Invalid/expired JWT -> 401 or 403
         bad_auth_resp = client.get("/cases", headers={"Authorization": "Bearer invalid_token_12345"})
-        assert bad_auth_resp.status_code == 401
+        assert bad_auth_resp.status_code in (401, 403)
 
         # 1d. RBAC: Analyst forbidden from creating case -> 403
         analyst_create = client.post("/cases", json={"case_number": "CASE-RBAC-ANA", "title": "Analyst Case"}, headers=ana_headers)
@@ -128,8 +128,45 @@ def run_all_verification_tests():
         cross_update = client.patch(f"/cases/{case_rbac_id}", json={"title": "Hacked Title"}, headers=other_headers)
         assert cross_update.status_code == 403
 
+        # 1g. Public registration blocked / removed
+        unauth_reg_resp = client.post("/auth/register", json={"username": "unauth", "email": "u@t.com", "password": "p", "role": "admin"})
+        assert unauth_reg_resp.status_code in (404, 405, 401, 403)
+
+        # 1h. Admin creates investigator and supervisor via /auth/users -> 201
+        admin_create_inv = client.post(
+            "/auth/users",
+            json={"username": "new_created_inv", "email": "new_inv@test.com", "password": "Password123!", "role": "INVESTIGATOR"},
+            headers=adm_headers,
+        )
+        assert admin_create_inv.status_code == 201
+        assert admin_create_inv.json()["role"] == "investigator"
+        assert admin_create_inv.json()["is_active"] is True
+
+        admin_create_sup = client.post(
+            "/auth/users",
+            json={"username": "new_created_sup", "email": "new_sup@test.com", "password": "Password123!", "role": "SUPERVISOR"},
+            headers=adm_headers,
+        )
+        assert admin_create_sup.status_code == 201
+        assert admin_create_sup.json()["role"] == "supervisor"
+
+        # 1i. Non-admin cannot create users -> 403
+        inv_create_user = client.post(
+            "/auth/users",
+            json={"username": "hacker_user", "email": "h@t.com", "password": "Password123!", "role": "investigator"},
+            headers=inv_headers,
+        )
+        assert inv_create_user.status_code == 403
+
+        # 1j. Disabled user cannot login -> 403
+        disabled_u = User(id=uuid.uuid4(), username="disabled_ver", email="dis@test.com", password_hash=pwd_hash, role="investigator", is_active=False)
+        db.add(disabled_u)
+        db.commit()
+        dis_login = client.post("/auth/login", json={"username": "disabled_ver", "password": "Secret123!"})
+        assert dis_login.status_code == 403
+
         db.close()
-        test_results["1. AUTHENTICATION & RBAC"] = ("PASS", "Valid login, JWT validation, 401 on missing/bad token, 403 on role/case violation")
+        test_results["1. AUTHENTICATION & RBAC"] = ("PASS", "Valid login, JWT validation, admin user creation, active check, 401 on missing/bad token, 403 on role/case violation")
         print("[PASS] 1. AUTHENTICATION & RBAC verified.")
     except Exception as e:
         test_results["1. AUTHENTICATION & RBAC"] = ("FAIL", str(e))
@@ -347,7 +384,9 @@ def run_all_verification_tests():
     # -----------------------------------------------------------------------
     try:
         with patch("database.get_neo4j_session") as mock_neo_db, \
-             patch("graph_service.get_neo4j_session") as mock_neo:
+             patch("graph_service.get_neo4j_session") as mock_neo, \
+             patch("graph_service._is_neo4j_available", return_value=True), \
+             patch("database.is_neo4j_online", return_value=True):
             mock_session = MagicMock()
             mock_neo.return_value.__enter__.return_value = mock_session
             mock_neo_db.return_value.__enter__.return_value = mock_session

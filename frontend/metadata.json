@@ -1,0 +1,6 @@
+{
+  "name": "NETRIX — Criminal Network Intelligence Platform",
+  "description": "Advanced criminal network analysis, investigative intelligence, and evidence integrity system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

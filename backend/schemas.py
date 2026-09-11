@@ -21,11 +21,25 @@ class TokenResponse(BaseModel):
     user: Dict[str, Any]
 
 
-class RegisterRequest(BaseModel):
+class UserCreateRequest(BaseModel):
     username: str
     email: str
     password: str
     role: str = "investigator"
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    username: str
+    email: str
+    role: str
+    is_active: bool
+
+
+# Backward compatibility alias if imported elsewhere
+RegisterRequest = UserCreateRequest
 
 
 # ---------------------------------------------------------------------------

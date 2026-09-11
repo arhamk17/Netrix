@@ -128,40 +128,65 @@ def generate_leads_for_case(case_id: str, db: Session) -> List[LeadResult]:
             )
 
     # -------------------------------------------------------------------------
-    # 3. TEMPORAL_ANOMALY Leads: Burst Calling or Dormancy Spike
+    # 3. TEMPORAL_ANOMALY & KINGPIN_LEADERSHIP Leads
     # -------------------------------------------------------------------------
     anomaly_records = [
-        r for r in analytics_records if r.metric_type in ("anomaly_score", "temporal_anomaly", "burst_calling")
+        r for r in analytics_records if r.metric_type in ("anomaly_score", "temporal_anomaly", "burst_calling", "kingpin_score")
     ]
     for anom in anomaly_records:
         meta = anom.meta_data or {}
         flag = str(meta.get("flag", "")).upper()
-        desc = meta.get("description", "Unusual temporal or communication pattern detected")
+        desc = meta.get("description", "Unusual behavioral or structural pattern detected")
         score = anom.metric_value or meta.get("anomaly_score", 0.75)
-        ent_name = meta.get("name") or entity_map.get(anom.entity_id, "Target Entity")
+        model_name = str(meta.get("model", ""))
+        ent_name = meta.get("name") or meta.get("entity_name") or entity_map.get(anom.entity_id, "Target Entity")
 
-        lead_subtype = "BURST_CALLING" if "BURST" in flag or "CALL" in flag else "DORMANCY_SPIKE"
-        explanation = (
-            f"Temporal anomaly pattern ({lead_subtype}) identified for '{ent_name}': {desc}. "
-            f"{MANDATORY_DISCLAIMER}"
-        )
-        new_leads.append(
-            LeadResult(
-                case_id=c_uuid,
-                lead_type="TEMPORAL_ANOMALY",
-                entities_involved=[ent_name],
-                severity="HIGH" if score > 0.8 else "MEDIUM",
-                confidence=round(min(0.95, score), 2),
-                explanation=explanation,
-                evidence_ids=[],
-                contributing_signals={
-                    "pattern": lead_subtype,
-                    "anomaly_score": score,
-                    "flag": flag,
-                    "details": desc,
-                },
+        if "Kingpin" in model_name or "KINGPIN" in flag:
+            explanation = (
+                f"Heterogeneous Crime GNN flagged '{ent_name}' with high Kingpin Leadership Score ({score:.2f}): {desc}. "
+                f"{MANDATORY_DISCLAIMER}"
             )
-        )
+            new_leads.append(
+                LeadResult(
+                    case_id=c_uuid,
+                    lead_type="KINGPIN_LEADERSHIP",
+                    entities_involved=[ent_name],
+                    severity="CRITICAL" if score > 0.75 else "HIGH",
+                    confidence=round(min(0.98, score), 2),
+                    explanation=explanation,
+                    evidence_ids=[],
+                    contributing_signals={
+                        "pattern": "KINGPIN_LEADERSHIP",
+                        "anomaly_score": score,
+                        "flag": flag,
+                        "details": desc,
+                        "model": model_name,
+                    },
+                )
+            )
+        else:
+            lead_subtype = "BURST_CALLING" if "BURST" in flag or "CALL" in flag else "DORMANCY_SPIKE"
+            explanation = (
+                f"Structural/Temporal anomaly pattern ({lead_subtype}) identified for '{ent_name}': {desc}. "
+                f"{MANDATORY_DISCLAIMER}"
+            )
+            new_leads.append(
+                LeadResult(
+                    case_id=c_uuid,
+                    lead_type="TEMPORAL_ANOMALY",
+                    entities_involved=[ent_name],
+                    severity="HIGH" if score > 0.8 else "MEDIUM",
+                    confidence=round(min(0.95, score), 2),
+                    explanation=explanation,
+                    evidence_ids=[],
+                    contributing_signals={
+                        "pattern": lead_subtype,
+                        "anomaly_score": score,
+                        "flag": flag,
+                        "details": desc,
+                    },
+                )
+            )
 
     # -------------------------------------------------------------------------
     # 4. BEHAVIORAL_SHIFT Leads: Pre/Post event communication shift

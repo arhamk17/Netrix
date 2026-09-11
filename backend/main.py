@@ -1,7 +1,20 @@
+import os
+import sys
 import uuid
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+try:
+    torch_lib = os.path.join(sys.prefix, "Lib", "site-packages", "torch", "lib")
+    if os.path.exists(torch_lib) and hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(torch_lib)
+        os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+except Exception:
+    pass
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -24,9 +37,11 @@ import schemas
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
     yield
-    neo4j_driver.close()
+    try:
+        neo4j_driver.close()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -43,10 +58,28 @@ if not cors_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import logging
+    logging.exception("Unhandled error on %s %s: %s", request.method, request.url, exc)
+    origin = request.headers.get("origin", "*")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "error": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": origin if origin else "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
 
 
 @app.get("/health")
@@ -193,3 +226,6 @@ def update_case(case_id: str, payload: schemas.CaseUpdate, request: Request, db:
     client_ip = get_client_ip(request)
     log_action(db, current_user.id, "update_case", "case", case.id, ip_address=client_ip)
     return case
+
+# Auto-reloaded with fast connection pooler settings
+

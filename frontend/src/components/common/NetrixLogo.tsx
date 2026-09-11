@@ -17,7 +17,7 @@ export const NetrixLogo: React.FC<NetrixLogoProps> = ({
   glow = false,
   animated = false,
   onClick,
-  alt = 'NETRIX — Criminal Network Intelligence'
+  alt = 'NETRIX'
 }) => {
   const logoSrc = '/netrix-logo.png';
 
@@ -77,7 +77,7 @@ export const NetrixLogo: React.FC<NetrixLogoProps> = ({
       )}
 
       {variant === 'horizontal' && (
-        <div className="flex items-center gap-3 w-full">
+        <div className="flex items-center gap-2.5 w-full">
           {/* Square Emblem Container */}
           <div className="relative w-8 h-8 sm:w-9 sm:h-9 overflow-hidden rounded-lg border border-white/10 bg-[#0B0F19] shadow-[0_2px_10px_rgba(0,0,0,0.5)] shrink-0 flex items-center justify-center">
             <img
@@ -86,16 +86,10 @@ export const NetrixLogo: React.FC<NetrixLogoProps> = ({
               className="w-full h-full object-contain p-0.5 rounded-md"
             />
           </div>
-          {/* Typography Branding Wordmark & Subtitle */}
-          <div className="flex flex-col justify-center leading-none">
-            <div className="flex items-center gap-1.5">
-              <span className="font-tech font-extrabold text-sm sm:text-base tracking-[0.2em] text-slate-100">
-                NETRIX
-              </span>
-              <span className="w-1.5 h-1.5 rounded-full bg-red-600 shadow-[0_0_6px_rgba(220,38,38,0.7)]" />
-            </div>
-            <span className="text-[7.5px] sm:text-[8px] font-mono tracking-[0.16em] text-slate-400 uppercase font-semibold mt-0.5">
-              CRIMINAL INTELLIGENCE
+          {/* Typography Branding Wordmark */}
+          <div className="flex items-center">
+            <span className="font-tech font-extrabold text-sm sm:text-base tracking-[0.2em] text-slate-100">
+              NETRIX
             </span>
           </div>
         </div>
@@ -117,15 +111,9 @@ export const NetrixLogo: React.FC<NetrixLogoProps> = ({
       )}
 
       {variant === 'wordmark' && (
-        <div className="flex flex-col items-center">
-          <div className="flex items-center gap-2">
-            <span className="font-tech font-black text-2xl sm:text-3xl tracking-[0.25em] text-slate-100 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)]">
-              NETRIX
-            </span>
-            <span className="w-2 h-2 rounded-full bg-red-600 shadow-[0_0_8px_rgba(220,38,38,0.8)]" />
-          </div>
-          <span className="text-[10px] font-mono tracking-[0.3em] text-red-500/90 font-bold uppercase mt-1">
-            CRIMINAL NETWORK INTELLIGENCE
+        <div className="flex items-center justify-center">
+          <span className="font-tech font-black text-2xl sm:text-3xl tracking-[0.25em] text-slate-100 drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)]">
+            NETRIX
           </span>
         </div>
       )}

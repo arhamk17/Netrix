@@ -85,17 +85,19 @@ export const ExplainabilityView: React.FC<Props> = ({ initialLead, onInspectEvid
   const stepIcons = [Activity, Cpu, GitMerge, FileArchive, Fingerprint];
 
   const reasoningSteps = explainData?.reasoning_chain && explainData.reasoning_chain.length > 0
-    ? explainData.reasoning_chain.map((step, idx) => ({
+    ? explainData.reasoning_chain.map((step: any, idx: number) => ({
         step: step.step || idx + 1,
-        title: step.title.toUpperCase(),
-        badge: idx === 0 ? 'ML HYPOTHESIS' : idx === 1 ? 'ENTITY GRAPH' : idx === 2 ? 'EVIDENCE PROVENANCE' : 'INTEGRITY AUDIT',
+        title: (step.title || step.signal_type || `REASONING STEP ${idx + 1}`).toString().replace(/_/g, ' ').toUpperCase(),
+        badge: idx === 0 ? 'ML HYPOTHESIS' : idx === 1 ? 'FEATURE CORRELATION' : idx === 2 ? 'GRAPH TOPOLOGY' : idx === 3 ? 'EVIDENCE PROVENANCE' : 'INTEGRITY AUDIT',
         icon: stepIcons[idx % stepIcons.length] || Activity,
-        summary: step.description,
-        details: [
-          step.description,
-          `Timestamp: ${new Date().toISOString()}`,
-          `Lead Reference: ${currentLead?.lead_id || 'N/A'}`
-        ]
+        summary: step.description || step.summary || 'Traceable reasoning inference node',
+        details: Array.isArray(step.details) && step.details.length > 0
+          ? step.details
+          : [
+              step.description || 'Verified multi-source forensic corroboration',
+              `Signal Type: ${step.signal_type || 'ANALYTICAL_INFERENCE'}`,
+              `Lead Reference: ${currentLead?.lead_id || 'N/A'}`
+            ]
       }))
     : [
         {

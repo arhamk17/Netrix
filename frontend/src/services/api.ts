@@ -283,7 +283,14 @@ export const api = {
   },
 
   getEvidenceCustodyHistory: async (evidenceId: string): Promise<CustodyHistoryResponse> => {
-    return request<CustodyHistoryResponse>(`/evidence/${encodeURIComponent(evidenceId)}/blockchain/history`);
+    return request<CustodyHistoryResponse>(`/evidence/${encodeURIComponent(evidenceId)}/blockchain/history`).catch(() => ({
+      evidence_id: evidenceId,
+      events: []
+    } as any));
+  },
+
+  getCustodyHistory: async (evidenceId: string): Promise<any> => {
+    return request<any>(`/evidence/${encodeURIComponent(evidenceId)}/blockchain/history`).catch(() => []);
   },
 
   // ---------------------------------------------------------------------------

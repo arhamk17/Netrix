@@ -65,12 +65,20 @@ export const IntegrityVerification: React.FC<Props> = ({ initialEvidenceId }) =>
     setVerifying(true);
     setTamperSimulated(false);
     try {
+      const custodyFetch = typeof api.getCustodyHistory === 'function'
+        ? api.getCustodyHistory(evId).catch(() => [])
+        : (typeof api.getEvidenceCustodyHistory === 'function' ? api.getEvidenceCustodyHistory(evId).catch(() => []) : Promise.resolve([]));
       const [res, custody] = await Promise.all([
-        api.verifyEvidence(evId),
-        api.getCustodyHistory(evId).catch(() => [])
+        api.verifyEvidence(evId).catch(() => null),
+        custodyFetch
       ]);
-      setVerifyResult(res);
-      setCustodyHistory(Array.isArray(custody) ? custody : []);
+      if (res) {
+        setVerifyResult(res);
+      } else {
+        throw new Error('Verification service fallback');
+      }
+      const custodyEvents = Array.isArray(custody) ? custody : ((custody as any)?.events || []);
+      setCustodyHistory(custodyEvents);
     } catch (err) {
       console.error('Verification failed:', err);
       const selected = evidenceList.find(e => (e.id || e.evidence_id) === evId);

@@ -25,7 +25,7 @@ import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import type { GraphData, InvestigativeLead, Evidence, ModelMetric } from '../../types';
 import type { TabType } from '../common/Sidebar';
-import { AnimatedCounter, LivePulseBeacon, DynamicWaveform, LiveTelemetryTicker } from '../common/DynamicMetrics';
+import { AnimatedCounter, LivePulseBeacon, DynamicWaveform } from '../common/DynamicMetrics';
 
 interface Props {
   onNavigate: (tab: TabType) => void;
@@ -145,9 +145,6 @@ export const CommandCenter: React.FC<Props> = ({ onNavigate }) => {
       transition={{ duration: 0.3 }}
       className="space-y-6 select-none font-sans"
     >
-      {/* 0. Live Top Telemetry Stream Bar */}
-      <LiveTelemetryTicker />
-
       {/* 1. Command Header Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
         <div>

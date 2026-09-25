@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from auth import get_current_user, require_roles
+from auth import get_current_user, get_optional_current_user, require_roles
 from database import get_db
 from models import ModelMetrics, User
 import schemas
@@ -22,7 +22,7 @@ VALID_TASK_TYPES = {"ner", "relation", "event", "anomaly", "link_prediction"}
 def record_model_metrics(
     payload: schemas.ModelMetricsCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "supervisor")),
+    current_user: User = Depends(require_roles("admin", "supervisor", "investigator", "analyst")),
 ):
     """
     Record evaluation metrics for a trained model.
@@ -156,7 +156,7 @@ def list_model_metrics(
     task_type: Optional[str] = Query(None, description="Filter by task_type (ner, relation, event, anomaly, link_prediction)"),
     model_name: Optional[str] = Query(None, description="Filter by model_name"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """List historical evaluation metrics for all models."""
     seed_gnn_benchmark_metrics(db)
@@ -174,7 +174,7 @@ def get_latest_model_metrics(
     task_type: Optional[str] = Query(None, description="Filter latest by task_type"),
     model_name: Optional[str] = Query(None, description="Filter latest by model_name"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """Retrieve the latest evaluation metrics per task type / model."""
     seed_gnn_benchmark_metrics(db)

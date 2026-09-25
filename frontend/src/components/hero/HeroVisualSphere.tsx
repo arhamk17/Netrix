@@ -8,6 +8,11 @@ interface Props {
 
 export const HeroVisualSphere: React.FC<Props> = ({ onScrollProgress = 0, interactive = true }) => {
   const mountRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<number>(onScrollProgress);
+
+  useEffect(() => {
+    scrollRef.current = onScrollProgress;
+  }, [onScrollProgress]);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -336,7 +341,7 @@ export const HeroVisualSphere: React.FC<Props> = ({ onScrollProgress = 0, intera
       cloudParticles.rotation.y = elapsedTime * 0.015;
 
       // Scroll depth response
-      const scrollDepth = onScrollProgress || 0;
+      const scrollDepth = scrollRef.current || 0;
       mainGroup.position.z = -scrollDepth * 4;
       mainGroup.position.y = -scrollDepth * 1.5;
 
@@ -364,7 +369,7 @@ export const HeroVisualSphere: React.FC<Props> = ({ onScrollProgress = 0, intera
       cloudGeo.dispose();
       cloudMaterial.dispose();
     };
-  }, [interactive, onScrollProgress]);
+  }, [interactive]);
 
   return (
     <div

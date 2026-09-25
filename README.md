@@ -4,6 +4,8 @@
 
 ### Criminal Network Intelligence & Digital Forensics Platform
 
+[![License](https://img.shields.io/badge/License-Proprietary-6D001A?style=flat-square)](LICENSE)
+
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -350,3 +352,4 @@ This project is proprietary. All rights reserved.
 <div align="center">
   <sub>Built by <a href="https://github.com/arhamk17">Arham Khan</a></sub>
 </div>
+

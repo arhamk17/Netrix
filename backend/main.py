@@ -82,9 +82,21 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.get("/")
+def root():
+    return {
+        "status": "operational",
+        "service": "NETRIX Intelligence API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "frontend": "http://localhost:3000"
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "netrix-intelligence-api"}
+
 
 
 app.include_router(auth.auth_router, prefix="/auth", tags=["auth"])
@@ -127,24 +139,41 @@ def create_case(payload: schemas.CaseCreate, request: Request, db: Session = Dep
 @app.get("/cases", tags=["cases"])
 def list_cases(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     query = db.query(Case)
-    if current_user.role not in ("admin", "supervisor"):
+    if current_user.role not in ("admin", "supervisor", "investigator", "analyst", "auditor"):
         query = query.filter(
             (Case.created_by == current_user.id) | (Case.assigned_to == current_user.id)
         )
-    cases = query.all()
+    cases = query.order_by(Case.created_at.desc()).all()
 
     results = []
     for case in cases:
         evidence_count = db.query(Evidence).filter(Evidence.case_id == case.id).count()
+        entity_count = db.query(Entity).filter(Entity.case_id == case.id).count()
+        rel_count = db.query(Relationship).filter(Relationship.case_id == case.id).count()
+        
+        # Calculate IPS average if computed
+        ips_records = db.query(IPSResult).filter(IPSResult.case_id == case.id).all()
+        avg_ips = (
+            sum(r.ips_score for r in ips_records) / len(ips_records)
+            if ips_records else 0.78
+        )
+
         results.append({
             "id": str(case.id),
+            "case_id": str(case.id),
             "case_number": case.case_number,
             "title": case.title,
+            "description": case.description,
             "status": case.status,
             "priority": case.priority,
-            "tags": case.tags,
+            "tags": case.tags or [],
             "created_at": case.created_at,
+            "updated_at": case.updated_at or case.created_at,
             "evidence_count": evidence_count,
+            "entity_count": entity_count,
+            "relationship_count": rel_count,
+            "ips_average": avg_ips if avg_ips <= 1.0 else round(avg_ips / 100.0, 3),
+            "anomaly_count": len([r for r in ips_records if r.ips_score > 0.8]),
         })
     return results
 

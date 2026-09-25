@@ -1,0 +1,14 @@
+{
+  "name": "netrix",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NETRIX - Criminal Network Intelligence & Digital Forensics Platform",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "powershell -ExecutionPolicy Bypass -Command \"& venv/Scripts/uvicorn.exe main:app --reload --app-dir backend --port 8000\"",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "lint": "npm --prefix frontend run lint"
+  }
+}

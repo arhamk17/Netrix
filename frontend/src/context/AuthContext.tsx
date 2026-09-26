@@ -34,7 +34,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return null;
     }
   });
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Only show initial loading if there is a stored token that needs server-side verification
+  const [isLoading, setIsLoading] = useState<boolean>(() => Boolean(getAuthToken()));
 
   const refreshUser = useCallback(async () => {
     const currentToken = getAuthToken();
@@ -57,13 +58,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    refreshUser();
+    // Only perform initial verification if we have a token stored
+    if (getAuthToken()) {
+      refreshUser();
+    } else {
+      setIsLoading(false);
+    }
 
     // Listen for unauthorized 401 event dispatched by API client
     const handleUnauthorized = () => {
       clearAuthToken();
       setTokenState(null);
       setUser(null);
+      setIsLoading(false);
     };
 
     window.addEventListener('netrix:unauthorized', handleUnauthorized);
@@ -72,8 +79,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = (newToken: string, newUser: User) => {
     setAuthToken(newToken);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem('netrix_user', JSON.stringify(newUser));
+        if (newUser.role) {
+          localStorage.setItem('netrix_role', newUser.role);
+        }
+      } catch (err) {
+        console.warn('[NETRIX AUTH] Failed to persist user to localStorage:', err);
+      }
+    }
     setTokenState(newToken);
     setUser(newUser);
+    setIsLoading(false);
   };
 
   const logout = () => {
@@ -81,6 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearAuthToken();
     setTokenState(null);
     setUser(null);
+    setIsLoading(false);
   };
 
   const isAuthenticated = Boolean(token && user);

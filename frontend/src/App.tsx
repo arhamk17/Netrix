@@ -43,7 +43,7 @@ export default function App() {
   };
 
   const [currentView, setCurrentView] = useState<'home' | 'login' | 'platform'>(getInitialView);
-  const { isAuthenticated, user, login: authLogin, logout: authLogout } = useAuth();
+  const { isAuthenticated, user, isLoading, login: authLogin, logout: authLogout } = useAuth();
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isInitializing, setIsInitializing] = useState<boolean>(false);
 
@@ -82,15 +82,40 @@ export default function App() {
       const hash = window.location.hash.toLowerCase();
       if (hash === '#login') {
         setCurrentView('login');
-      } else if (hash === '#home') {
+      } else if (hash === '#home' || hash === '') {
         setCurrentView('home');
-      } else if (hash === '#platform' && isAuthenticated) {
-        setCurrentView('platform');
+      } else if (hash === '#platform') {
+        if (isAuthenticated || getAuthToken()) {
+          setCurrentView('platform');
+        } else {
+          setCurrentView('login');
+          window.location.hash = '#login';
+        }
       }
     };
     window.addEventListener('hashchange', handleHash);
     return () => window.removeEventListener('hashchange', handleHash);
   }, [isAuthenticated]);
+
+  // When user successfully authenticates, transition from login to platform
+  useEffect(() => {
+    if (isAuthenticated && currentView === 'login') {
+      setCurrentView('platform');
+      if (typeof window !== 'undefined' && window.location.hash !== '#platform') {
+        window.location.hash = '#platform';
+      }
+    }
+  }, [isAuthenticated, currentView]);
+
+  // When session expires or logs out while on platform, redirect to login
+  useEffect(() => {
+    if (!isAuthenticated && !isLoading && currentView === 'platform') {
+      setCurrentView('login');
+      if (typeof window !== 'undefined' && window.location.hash !== '#login') {
+        window.location.hash = '#login';
+      }
+    }
+  }, [isAuthenticated, isLoading, currentView]);
 
   // Load real active case from backend ONLY when authenticated AND inside the platform
   useEffect(() => {
@@ -131,7 +156,33 @@ export default function App() {
     if (typeof window !== 'undefined') window.location.hash = '#home';
   };
 
-  // 1. PUBLIC HOMEPAGE (Cinematic 3D experience)
+  // 1. CLEARANCE VERIFICATION LOADING GUARD (when restoring session on #platform)
+  if (isLoading && getAuthToken() && (currentView === 'platform' || (typeof window !== 'undefined' && window.location.hash.toLowerCase() === '#platform'))) {
+    return (
+      <div className="min-h-screen bg-[#F7F5F0] flex flex-col items-center justify-center font-sans">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-6 w-6 border-2 border-[#121110] border-t-transparent rounded-full animate-spin" />
+          <span className="text-[11px] font-mono tracking-widest text-[#6B6760] uppercase">
+            Verifying Clearance Credentials...
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. FULL-SCREEN SYSTEM INITIALIZATION SEQUENCE
+  if (isInitializing) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-[#F7F5F0]" />}>
+        <SystemInitializer
+          onComplete={() => setIsInitializing(false)}
+          targetDestinationName={activeTab.replace('_', ' ')}
+        />
+      </Suspense>
+    );
+  }
+
+  // 3. PUBLIC HOMEPAGE (Cinematic 3D experience)
   if (currentView === 'home') {
     return (
       <Suspense fallback={<div className="min-h-screen bg-[#F7F5F0]" />}>
@@ -151,7 +202,7 @@ export default function App() {
     );
   }
 
-  // 2. AUTHENTICATION GATEWAY
+  // 4. AUTHENTICATION GATEWAY
   if (currentView === 'login' || !isAuthenticated) {
     return (
       <Login
@@ -167,18 +218,6 @@ export default function App() {
           if (typeof window !== 'undefined') window.location.hash = '#home';
         }}
       />
-    );
-  }
-
-  // 3. FULL-SCREEN SYSTEM INITIALIZATION SEQUENCE
-  if (isInitializing) {
-    return (
-      <Suspense fallback={<div className="min-h-screen bg-[#F7F5F0]" />}>
-        <SystemInitializer
-          onComplete={() => setIsInitializing(false)}
-          targetDestinationName={activeTab.replace('_', ' ')}
-        />
-      </Suspense>
     );
   }
 

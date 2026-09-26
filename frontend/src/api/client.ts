@@ -305,36 +305,23 @@ export const apiClient = {
 
       setAuthToken(res.access_token);
 
-      // Hydrate with full user profile
-      let userObj: User;
-      try {
-        const meRes = await apiRequest<any>('/auth/me');
-        userObj = {
-          id: String(meRes.id || res.user.id),
-          username: meRes.username || res.user.username,
-          name: meRes.full_name || meRes.name || meRes.username,
-          email: meRes.email || `${meRes.username}@netrix.org`,
-          role: (meRes.role?.toLowerCase() || res.user.role?.toLowerCase() || 'investigator') as UserRole,
-          status: meRes.is_active !== false ? 'active' : 'suspended',
-          department: meRes.department || 'Intelligence Division',
-          lastActive: new Date().toISOString()
-        };
-      } catch {
-        userObj = {
-          id: String(res.user.id),
-          username: res.user.username,
-          name: res.user.username,
-          email: `${res.user.username}@netrix.org`,
-          role: (res.user.role?.toLowerCase() || 'investigator') as UserRole,
-          status: 'active',
-          department: 'Intelligence Division',
-          lastActive: new Date().toISOString()
-        };
-      }
+      const role = (res.user?.role?.toLowerCase() || 'investigator') as UserRole;
+      const userObj: User = {
+        id: String(res.user?.id || ''),
+        username: res.user?.username || username,
+        name: res.user?.username || username,
+        email: `${res.user?.username || username}@netrix.org`,
+        role,
+        status: 'active',
+        department: 'Intelligence Division',
+        lastActive: new Date().toISOString()
+      };
 
       if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.setItem('netrix_user', JSON.stringify(userObj));
-        localStorage.setItem('netrix_role', userObj.role);
+        try {
+          localStorage.setItem('netrix_user', JSON.stringify(userObj));
+          localStorage.setItem('netrix_role', userObj.role);
+        } catch {}
       }
 
       return { token: res.access_token, user: userObj };
